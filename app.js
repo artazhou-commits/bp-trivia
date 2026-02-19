@@ -99,9 +99,16 @@ function init() {
     } else if (state.screen === 'end' && (e.key === ' ' || e.key === 'Enter')) {
       e.preventDefault();
       startGame();
-    } else if (state.screen === 'game' && e.key === ' ' && document.activeElement !== $('#guess-input')) {
+    } else if (state.screen === 'game' && (e.key === ' ' || e.key === 'Enter') && document.activeElement !== $('#guess-input')) {
       e.preventDefault();
-      playSnippet();
+      if (state.answered && nextRoundTimeout) {
+        clearTimeout(nextRoundTimeout);
+        nextRoundTimeout = null;
+        state.round++;
+        if (state.round >= TOTAL_ROUNDS) { showEndScreen(); } else { showRound(); }
+      } else {
+        playSnippet();
+      }
     } else if (state.screen === 'game' && selectedMode === 'easy' && e.key >= '1' && e.key <= '4') {
       handleAnswer(parseInt(e.key) - 1);
     }
