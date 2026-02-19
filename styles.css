@@ -280,6 +280,28 @@ body {
   padding: 8px 0 12px;
 }
 
+.reset-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--surface-3);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.reset-btn:hover {
+  border-color: var(--wrong);
+  color: var(--wrong);
+  background: rgba(255, 23, 68, 0.1);
+}
+
 /* ── Round Progress ──────────────────── */
 
 .round-progress {

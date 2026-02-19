@@ -187,6 +187,7 @@ function init() {
   $('#replay-btn').addEventListener('click', startGame);
   $('#play-btn').addEventListener('click', playSnippet);
   $('#guess-submit').addEventListener('click', submitGuess);
+  $('#reset-btn').addEventListener('click', resetToStart);
   $('#total-rounds').textContent = TOTAL_ROUNDS;
 
   // Difficulty picker
@@ -389,6 +390,19 @@ function restoreGame(saved) {
 }
 
 // ── Start Game ───────────────────────────
+
+function resetToStart() {
+  clearAllTimers();
+  clearSavedGame();
+
+  if (embedController && state.embedIsPlaying) {
+    try { embedController.togglePlay(); } catch (e) {}
+  }
+
+  state.isPlaying = false;
+  state.answered = false;
+  showScreen('start');
+}
 
 function startGame() {
   pendingRestore = null;
