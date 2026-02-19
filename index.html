@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>BLINK TRIVIA</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🖤</text></svg>">
+</head>
+<body>
+
+  <!-- Result Flash Overlay -->
+  <div class="result-flash" id="result-flash">
+    <span class="icon"></span>
+  </div>
+
+  <!-- App -->
+  <div id="app">
+
+    <!-- ═══ START SCREEN ═══ -->
+    <div id="start-screen" class="screen active">
+      <div class="logo">BLINK<br>TRIVIA</div>
+      <p class="subtitle">How well do you know BLACKPINK?</p>
+      <p class="song-count"><span id="song-count">0</span> songs across the full discography</p>
+      <div class="difficulty-picker" id="difficulty-picker">
+        <button class="diff-btn" data-mode="easy">Easy</button>
+        <button class="diff-btn selected" data-mode="medium">Medium</button>
+        <button class="diff-btn" data-mode="hard">Hard</button>
+      </div>
+      <button id="start-btn" class="btn-primary" disabled>PLAY</button>
+      <p class="loading-text" id="loading-text">Connecting to Spotify...</p>
+    </div>
+
+    <!-- ═══ GAME SCREEN ═══ -->
+    <div id="game-screen" class="screen">
+
+      <div class="game-header">
+        <span class="round-info">Round <span id="round-num">1</span> / <span id="total-rounds">10</span></span>
+        <span class="score-info">Score: <span class="score-num" id="score-display">0</span></span>
+      </div>
+
+      <div class="player-area">
+        <!-- Spotify embed sits behind our UI, blurred to hide track info -->
+        <div class="spotify-layer" id="spotify-layer">
+          <div id="spotify-embed"></div>
+        </div>
+
+        <div class="player-controls" id="player-controls">
+          <button class="play-btn" id="play-btn">
+            <svg viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg">
+              <path d="M8 5.14v14l11-7-11-7z"/>
+            </svg>
+          </button>
+
+          <div class="waveform" id="waveform"></div>
+
+          <p class="player-label" id="player-label">TAP TO PLAY SNIPPET</p>
+
+          <div class="timer-container">
+            <div class="timer-bar">
+              <div class="timer-fill" id="timer-fill"></div>
+            </div>
+            <p class="timer-text" id="timer-text">0.0s</p>
+          </div>
+        </div>
+
+        <!-- Fallback: shown if programmatic play fails -->
+        <div class="spotify-fallback" id="spotify-fallback">
+          <p>Click play on the Spotify player below, then guess the song!</p>
+        </div>
+      </div>
+
+      <div class="options" id="options"></div>
+
+      <div class="guess-area" id="guess-area">
+        <div class="input-wrapper">
+          <input type="text" id="guess-input" class="guess-input" placeholder="Type the song name..." autocomplete="off" spellcheck="false">
+          <button class="guess-submit" id="guess-submit">GUESS</button>
+        </div>
+      </div>
+
+      <div class="answer-reveal">
+        <p class="answer-artist"></p>
+        <p class="answer-song"></p>
+        <span class="answer-member-tag"></span>
+      </div>
+
+      <div class="next-round-bar">
+        <div class="next-round-fill"></div>
+      </div>
+
+    </div>
+
+    <!-- ═══ END SCREEN ═══ -->
+    <div id="end-screen" class="screen">
+      <div class="final-score">
+        <h2>Game Over</h2>
+        <div class="score-circle">
+          <span id="final-score-num">0</span><small>/10</small>
+        </div>
+        <p class="score-message" id="score-message"></p>
+        <div class="score-breakdown">
+          <div class="breakdown-item">
+            <span class="breakdown-num green" id="correct-count">0</span>
+            <span class="breakdown-label">Correct</span>
+          </div>
+          <div class="breakdown-item">
+            <span class="breakdown-num red" id="wrong-count">0</span>
+            <span class="breakdown-label">Wrong</span>
+          </div>
+        </div>
+      </div>
+      <button id="replay-btn" class="btn-primary">PLAY AGAIN</button>
+    </div>
+
+  </div>
+
+  <script src="songs.js"></script>
+  <script src="app.js"></script>
+  <script src="https://open.spotify.com/embed/iframe-api/v1"></script>
+</body>
+</html>
