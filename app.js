@@ -4,7 +4,7 @@
 
 const TOTAL_ROUNDS = 10;
 const NEXT_ROUND_DELAY = 3000;
-const PLAY_TIMEOUT_MS = 3000;
+const PLAY_TIMEOUT_MS = 6000;
 const FUZZY_THRESHOLD = 0.55;
 
 const DIFFICULTY = {
@@ -38,6 +38,8 @@ let tickInterval = null;
 let nextRoundTimeout = null;
 let playbackDetected = false;
 let playTimeoutId = null;
+let playRetryId = null;
+let trackLoadedAt = 0;
 
 // ── DOM Refs ─────────────────────────────
 
@@ -184,6 +186,7 @@ function startGame() {
   clearInterval(tickInterval);
   clearTimeout(nextRoundTimeout);
   clearTimeout(playTimeoutId);
+  clearTimeout(playRetryId);
 
   if (embedController && state.isPlaying) {
     try { embedController.togglePlay(); } catch (e) {}
@@ -257,6 +260,7 @@ function showRound() {
   } else {
     playerArea.classList.remove('fallback-mode');
     if (embedController && spotifyReady) {
+      trackLoadedAt = Date.now();
       embedController.loadUri('spotify:track:' + song.id);
     }
   }
@@ -458,29 +462,75 @@ function playSnippet() {
   playBtn.innerHTML = pauseSvg();
 
   $('#waveform').classList.add('active');
-  $('#player-label').textContent = 'NOW PLAYING';
+  $('#player-label').textContent = 'LOADING...';
 
   const song = state.roundSongs[state.round];
   const safeTime = song.safe
     ? song.safe[Math.floor(Math.random() * song.safe.length)]
     : 20;
 
+  function attemptPlay() {
+    if (!state.isPlaying) return;
+    try {
+      embedController.seek(safeTime);
+      embedController.play();
+    } catch (e) {}
+  }
+
+  // On replay, reload the URI first
   if (state.hasPlayedSnippet) {
+    trackLoadedAt = Date.now();
     embedController.loadUri('spotify:track:' + song.id);
-    setTimeout(() => {
-      try { embedController.seek(safeTime); embedController.play(); } catch (e) {}
-    }, 500);
-  } else {
-    try { embedController.seek(safeTime); embedController.play(); } catch (e) {}
   }
   state.hasPlayedSnippet = true;
 
-  const startTime = Date.now();
+  // Wait at least 1s after loadUri before first play attempt
+  const timeSinceLoad = Date.now() - trackLoadedAt;
+  const initialDelay = Math.max(300, 1000 - timeSinceLoad);
+
+  setTimeout(attemptPlay, initialDelay);
+
+  // Retry if playback hasn't started after 2s
+  clearTimeout(playRetryId);
+  playRetryId = setTimeout(() => {
+    if (!playbackDetected && state.isPlaying) {
+      attemptPlay();
+    }
+  }, initialDelay + 2000);
+
+  // Start the snippet timer only once playback is actually detected
+  // (or after a max wait so the UI isn't stuck forever)
+  startTimerOnPlayback();
+
+  // Ultimate fallback if Spotify never responds
+  clearTimeout(playTimeoutId);
+  playTimeoutId = setTimeout(() => {
+    if (!playbackDetected && state.isPlaying) {
+      stopSnippet();
+      activateFallbackMode();
+    }
+  }, PLAY_TIMEOUT_MS);
+}
+
+function startTimerOnPlayback() {
   const duration = snippetDuration() * 1000;
+  let timerStarted = false;
 
   clearInterval(tickInterval);
   tickInterval = setInterval(() => {
-    const elapsed = Date.now() - startTime;
+    if (!state.isPlaying) { clearInterval(tickInterval); return; }
+
+    // Wait for actual playback before counting down
+    if (!timerStarted) {
+      if (playbackDetected) {
+        timerStarted = true;
+        $('#player-label').textContent = 'NOW PLAYING';
+        state._timerStart = Date.now();
+      }
+      return;
+    }
+
+    const elapsed = Date.now() - state._timerStart;
     const remaining = Math.max(0, duration - elapsed);
     const pct = (remaining / duration) * 100;
 
@@ -489,14 +539,6 @@ function playSnippet() {
 
     if (remaining <= 0) stopSnippet();
   }, 50);
-
-  clearTimeout(playTimeoutId);
-  playTimeoutId = setTimeout(() => {
-    if (!playbackDetected && state.isPlaying) {
-      stopSnippet();
-      activateFallbackMode();
-    }
-  }, PLAY_TIMEOUT_MS);
 }
 
 function activateFallbackMode() {
@@ -516,9 +558,17 @@ function stopSnippet() {
   state.isPlaying = false;
   clearInterval(tickInterval);
   clearTimeout(playTimeoutId);
+  clearTimeout(playRetryId);
 
   if (embedController) {
     try { embedController.togglePlay(); } catch (e) {}
+    // Double-check: if still playing after togglePlay, try again
+    setTimeout(() => {
+      if (playbackDetected) {
+        playbackDetected = false;
+        try { embedController.togglePlay(); } catch (e) {}
+      }
+    }, 200);
   }
 
   const playBtn = $('#play-btn');
