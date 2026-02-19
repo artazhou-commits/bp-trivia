@@ -17,6 +17,8 @@ let selectedMode = 'medium';
 
 // ── State ────────────────────────────────
 
+let playedSongIds = new Set();
+
 let state = {
   screen: 'start',
   round: 0,
@@ -200,8 +202,15 @@ function startGame() {
 }
 
 function pickRandomSongs(count) {
-  const shuffled = [...SONGS].sort(() => Math.random() - 0.5);
-  return shuffled.slice(0, count);
+  let available = SONGS.filter((s) => !playedSongIds.has(s.id));
+  if (available.length < count) {
+    playedSongIds.clear();
+    available = [...SONGS];
+  }
+  const shuffled = available.sort(() => Math.random() - 0.5);
+  const picked = shuffled.slice(0, count);
+  picked.forEach((s) => playedSongIds.add(s.id));
+  return picked;
 }
 
 // ── Show Round ───────────────────────────
