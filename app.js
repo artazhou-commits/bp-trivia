@@ -40,6 +40,7 @@ let playbackDetected = false;
 let playTimeoutId = null;
 let playRetryId = null;
 let trackLoadedAt = 0;
+let answeredAt = 0;
 
 // ── DOM Refs ─────────────────────────────
 
@@ -101,7 +102,7 @@ function init() {
       startGame();
     } else if (state.screen === 'game' && (e.key === ' ' || e.key === 'Enter') && document.activeElement !== $('#guess-input')) {
       e.preventDefault();
-      if (state.answered && nextRoundTimeout) {
+      if (state.answered && nextRoundTimeout && (Date.now() - answeredAt) > 1000) {
         clearTimeout(nextRoundTimeout);
         nextRoundTimeout = null;
         state.round++;
@@ -418,6 +419,7 @@ function submitGuess() {
 // ── Advance Round ────────────────────────
 
 function advanceRound() {
+  answeredAt = Date.now();
   const nrBar = $('.next-round-bar');
   nrBar.classList.add('visible');
   requestAnimationFrame(() => {
