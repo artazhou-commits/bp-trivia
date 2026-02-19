@@ -37,6 +37,7 @@ let spotifyReady = false;
 let tickInterval = null;
 let nextRoundTimeout = null;
 let playbackDetected = false;
+let embedIsPlaying = false;
 let playTimeoutId = null;
 let playRetryId = null;
 let trackLoadedAt = 0;
@@ -151,8 +152,9 @@ function initSpotifyEmbed() {
       }
 
       controller.addListener('playback_update', (e) => {
-        if (e && e.data && !e.data.isPaused) {
-          playbackDetected = true;
+        if (e && e.data) {
+          embedIsPlaying = !e.data.isPaused;
+          if (embedIsPlaying) playbackDetected = true;
         }
       });
     });
@@ -196,7 +198,7 @@ function startGame() {
   clearTimeout(playTimeoutId);
   clearTimeout(playRetryId);
 
-  if (embedController && state.isPlaying) {
+  if (embedController && embedIsPlaying) {
     try { embedController.togglePlay(); } catch (e) {}
   }
 
@@ -570,14 +572,15 @@ function stopSnippet() {
   clearTimeout(playRetryId);
 
   if (embedController) {
-    try { embedController.togglePlay(); } catch (e) {}
-    // Double-check: if still playing after togglePlay, try again
+    if (embedIsPlaying) {
+      try { embedController.togglePlay(); } catch (e) {}
+    }
+    // Retry only if Spotify reports it's still playing
     setTimeout(() => {
-      if (playbackDetected) {
-        playbackDetected = false;
+      if (embedIsPlaying) {
         try { embedController.togglePlay(); } catch (e) {}
       }
-    }, 200);
+    }, 300);
   }
 
   const playBtn = $('#play-btn');
