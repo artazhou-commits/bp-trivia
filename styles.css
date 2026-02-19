@@ -277,7 +277,45 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 8px 0 24px;
+  padding: 8px 0 12px;
+}
+
+/* ── Round Progress ──────────────────── */
+
+.round-progress {
+  display: flex;
+  gap: 6px;
+  padding-bottom: 16px;
+}
+
+.round-dot {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface-3);
+  transition: background 0.3s ease;
+}
+
+.round-dot.completed {
+  background: var(--pink);
+}
+
+.round-dot.current {
+  background: var(--pink-light);
+  animation: currentDotPulse 1.5s ease infinite;
+}
+
+.round-dot.correct {
+  background: var(--correct);
+}
+
+.round-dot.wrong {
+  background: var(--wrong);
+}
+
+@keyframes currentDotPulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
 }
 
 .round-info {
@@ -896,5 +934,5 @@ body {
   background: var(--pink);
   border-radius: 2px;
   width: 100%;
-  transition: width 2s linear;
+  transition: width 3s linear;
 }

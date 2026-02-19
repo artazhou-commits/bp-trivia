@@ -2,46 +2,71 @@
    BLINK TRIVIA — Game Logic
    ═══════════════════════════════════════════ */
 
+// ── Constants ────────────────────────────
+
 const TOTAL_ROUNDS = 10;
-const NEXT_ROUND_DELAY = 3000;
+const NEXT_ROUND_DELAY_MS = 3000;
 const PLAY_TIMEOUT_MS = 6000;
+const SPOTIFY_INIT_TIMEOUT_MS = 6000;
+const TIMER_TICK_MS = 50;
+const MIN_PLAY_DELAY_MS = 300;
+const TARGET_LOAD_DELAY_MS = 1000;
+const PLAY_RETRY_DELAY_MS = 2000;
+const STOP_RETRY_DELAY_MS = 300;
+const MIN_ADVANCE_DELAY_MS = 1000;
+const INPUT_FOCUS_DELAY_MS = 100;
+const SCORE_BUMP_MS = 400;
+const TOAST_DURATION_MS = 3000;
+const CONFETTI_DURATION_MS = 5000;
+const CONFETTI_PIECE_COUNT = 60;
+const WAVEFORM_BAR_COUNT = 32;
 const FUZZY_THRESHOLD = 0.55;
+const STORAGE_KEY = 'blink_trivia_save';
 
 const DIFFICULTY = {
-  easy:   { duration: 10 },
-  medium: { duration: 6 },
-  hard:   { duration: 3 },
+  easy:   { duration: 7.5 },
+  medium: { duration: 5 },
+  hard:   { duration: 2.5 },
 };
 
-let selectedMode = 'medium';
-
 // ── State ────────────────────────────────
+// All game state consolidated into a single object.
 
-let playedSongIds = new Set();
-
-let state = {
+const state = {
   screen: 'start',
+  difficulty: 'medium',
   round: 0,
   score: 0,
   roundSongs: [],
+  roundResults: [],
+  playedSongIds: new Set(),
+
   currentOptions: [],
   correctIndex: -1,
   answered: false,
+
   isPlaying: false,
   hasPlayedSnippet: false,
   fallbackMode: false,
+  playbackDetected: false,
+  embedIsPlaying: false,
+  trackLoadedAt: 0,
+  answeredAt: 0,
+  timerStart: 0,
 };
 
+// Timer/interval IDs (separate from game state for clarity)
+const timers = {
+  tick: null,
+  nextRound: null,
+  playTimeout: null,
+  playRetry: null,
+};
+
+// Spotify embed controller (infrastructure, not game state)
 let embedController = null;
 let spotifyReady = false;
-let tickInterval = null;
-let nextRoundTimeout = null;
-let playbackDetected = false;
-let embedIsPlaying = false;
-let playTimeoutId = null;
-let playRetryId = null;
-let trackLoadedAt = 0;
-let answeredAt = 0;
+let pendingRestore = null;
 
 // ── DOM Refs ─────────────────────────────
 
@@ -50,9 +75,107 @@ const $$ = (sel) => document.querySelectorAll(sel);
 
 let screens = {};
 
+// ── Data Validation ──────────────────────
+
+function validateSongs() {
+  if (!Array.isArray(SONGS) || SONGS.length === 0) {
+    console.error('SONGS array is empty or missing');
+    return false;
+  }
+
+  const validMembers = new Set(['group', 'jennie', 'lisa', 'rose', 'jisoo']);
+  const ids = new Set();
+  let valid = true;
+
+  SONGS.forEach((song, i) => {
+    if (!song.id || typeof song.id !== 'string') {
+      console.warn(`Song at index ${i}: invalid or missing id`);
+      valid = false;
+    }
+    if (ids.has(song.id)) {
+      console.warn(`Song at index ${i}: duplicate id "${song.id}"`);
+    }
+    ids.add(song.id);
+
+    if (!song.title) {
+      console.warn(`Song "${song.id}": missing title`);
+      valid = false;
+    }
+    if (!song.artist) {
+      console.warn(`Song "${song.id}": missing artist`);
+    }
+    if (!validMembers.has(song.member)) {
+      console.warn(`Song "${song.id}": invalid member "${song.member}"`);
+    }
+    if (!Array.isArray(song.safe) || song.safe.length === 0) {
+      console.warn(`Song "${song.id}": missing safe timestamps`);
+    }
+  });
+
+  return valid;
+}
+
+// ── Session Persistence ──────────────────
+
+function saveGame() {
+  try {
+    const data = {
+      difficulty: state.difficulty,
+      round: state.round,
+      score: state.score,
+      roundSongIds: state.roundSongs.map((s) => s.id),
+      playedSongIds: [...state.playedSongIds],
+      roundResults: state.roundResults,
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  } catch (e) {
+    // localStorage may be unavailable (private browsing, quota exceeded)
+  }
+}
+
+function clearSavedGame() {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch (e) {}
+}
+
+function loadSavedGame() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+
+    const data = JSON.parse(raw);
+    if (!data.roundSongIds || !Array.isArray(data.roundSongIds)) return null;
+    if (typeof data.round !== 'number' || data.round < 0) return null;
+    if (typeof data.score !== 'number') return null;
+
+    // Resolve song IDs back to song objects
+    const songMap = new Map(SONGS.map((s) => [s.id, s]));
+    const roundSongs = data.roundSongIds.map((id) => songMap.get(id)).filter(Boolean);
+    if (roundSongs.length < TOTAL_ROUNDS) {
+      clearSavedGame();
+      return null;
+    }
+
+    return {
+      difficulty: data.difficulty || 'medium',
+      round: data.round,
+      score: data.score,
+      roundSongs,
+      playedSongIds: new Set(data.playedSongIds || []),
+      roundResults: data.roundResults || [],
+    };
+  } catch (e) {
+    clearSavedGame();
+    return null;
+  }
+}
+
 // ── Init ─────────────────────────────────
 
 function init() {
+  validateSongs();
+
   screens = {
     start: $('#start-screen'),
     game: $('#game-screen'),
@@ -71,7 +194,7 @@ function init() {
     btn.addEventListener('click', () => {
       $$('.diff-btn').forEach((b) => b.classList.remove('selected'));
       btn.classList.add('selected');
-      selectedMode = btn.dataset.mode;
+      state.difficulty = btn.dataset.mode;
     });
   });
 
@@ -85,7 +208,7 @@ function init() {
 
   // Generate waveform bars
   const wf = $('#waveform');
-  for (let i = 0; i < 32; i++) {
+  for (let i = 0; i < WAVEFORM_BAR_COUNT; i++) {
     const bar = document.createElement('div');
     bar.className = 'bar';
     bar.style.setProperty('--max-h', (12 + Math.random() * 36) + 'px');
@@ -93,38 +216,61 @@ function init() {
     wf.appendChild(bar);
   }
 
+  // Generate progress dots
+  const progress = $('#round-progress');
+  for (let i = 0; i < TOTAL_ROUNDS; i++) {
+    const dot = document.createElement('div');
+    dot.className = 'round-dot';
+    progress.appendChild(dot);
+  }
+
   // Keyboard shortcuts
-  document.addEventListener('keydown', (e) => {
-    if (state.screen === 'start' && (e.key === ' ' || e.key === 'Enter')) {
-      e.preventDefault();
-      if (!$('#start-btn').disabled) startGame();
-    } else if (state.screen === 'end' && (e.key === ' ' || e.key === 'Enter')) {
-      e.preventDefault();
-      startGame();
-    } else if (state.screen === 'game' && (e.key === ' ' || e.key === 'Enter') && document.activeElement !== $('#guess-input')) {
-      e.preventDefault();
-      if (state.answered && nextRoundTimeout && (Date.now() - answeredAt) > 1000) {
-        clearTimeout(nextRoundTimeout);
-        nextRoundTimeout = null;
-        state.round++;
-        if (state.round >= TOTAL_ROUNDS) { showEndScreen(); } else { showRound(); }
-      } else {
-        playSnippet();
-      }
-    } else if (state.screen === 'game' && selectedMode === 'easy' && e.key >= '1' && e.key <= '4') {
-      handleAnswer(parseInt(e.key) - 1);
-    }
-  });
+  document.addEventListener('keydown', handleKeydown);
 
   initSpotifyEmbed();
 
+  // Check for saved game
+  const saved = loadSavedGame();
+  if (saved) {
+    pendingRestore = saved;
+    $('#loading-text').textContent = 'Resuming game...';
+  }
+
+  // Spotify init timeout / fallback
   setTimeout(() => {
     if (!spotifyReady) {
-      $('#start-btn').disabled = false;
-      $('#loading-text').textContent = 'Using Spotify player fallback';
       state.fallbackMode = true;
+      if (pendingRestore) {
+        restoreGame(pendingRestore);
+        pendingRestore = null;
+      } else {
+        $('#start-btn').disabled = false;
+        $('#loading-text').textContent = 'Using Spotify player fallback';
+      }
     }
-  }, 6000);
+  }, SPOTIFY_INIT_TIMEOUT_MS);
+}
+
+function handleKeydown(e) {
+  if (state.screen === 'start' && (e.key === ' ' || e.key === 'Enter')) {
+    e.preventDefault();
+    if (!$('#start-btn').disabled) startGame();
+  } else if (state.screen === 'end' && (e.key === ' ' || e.key === 'Enter')) {
+    e.preventDefault();
+    startGame();
+  } else if (state.screen === 'game' && (e.key === ' ' || e.key === 'Enter') && document.activeElement !== $('#guess-input')) {
+    e.preventDefault();
+    if (state.answered && timers.nextRound && (Date.now() - state.answeredAt) > MIN_ADVANCE_DELAY_MS) {
+      clearTimeout(timers.nextRound);
+      timers.nextRound = null;
+      state.round++;
+      if (state.round >= TOTAL_ROUNDS) { showEndScreen(); } else { showRound(); }
+    } else {
+      playSnippet();
+    }
+  } else if (state.screen === 'game' && isEasyMode() && e.key >= '1' && e.key <= '4') {
+    handleAnswer(parseInt(e.key) - 1);
+  }
 }
 
 // ── Spotify Embed ────────────────────────
@@ -152,11 +298,17 @@ function initSpotifyEmbed() {
       }
 
       controller.addListener('playback_update', (e) => {
-        if (e && e.data) {
-          embedIsPlaying = !e.data.isPaused;
-          if (embedIsPlaying) playbackDetected = true;
+        if (e && e.data && typeof e.data.isPaused === 'boolean') {
+          state.embedIsPlaying = !e.data.isPaused;
+          if (state.embedIsPlaying) state.playbackDetected = true;
         }
       });
+
+      // Restore saved game once Spotify is ready
+      if (pendingRestore) {
+        restoreGame(pendingRestore);
+        pendingRestore = null;
+      }
     });
   };
 }
@@ -164,7 +316,7 @@ function initSpotifyEmbed() {
 function createFallbackEmbed(trackId) {
   const layer = $('#spotify-layer');
   layer.innerHTML = `<iframe
-    src="https://open.spotify.com/embed/track/${trackId}?theme=0&utm_source=generator"
+    src="https://open.spotify.com/embed/track/${encodeURIComponent(trackId)}?theme=0&utm_source=generator"
     width="100%" height="80" frameborder="0"
     allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
     loading="lazy"
@@ -183,22 +335,66 @@ function showScreen(name) {
 // ── Helpers ──────────────────────────────
 
 function isEasyMode() {
-  return selectedMode === 'easy';
+  return state.difficulty === 'easy';
 }
 
 function snippetDuration() {
-  return DIFFICULTY[selectedMode].duration;
+  return DIFFICULTY[state.difficulty].duration;
+}
+
+function clearAllTimers() {
+  clearInterval(timers.tick);
+  clearTimeout(timers.nextRound);
+  clearTimeout(timers.playTimeout);
+  clearTimeout(timers.playRetry);
+  timers.tick = null;
+  timers.nextRound = null;
+  timers.playTimeout = null;
+  timers.playRetry = null;
+}
+
+// ── Restore Game ─────────────────────────
+
+function restoreGame(saved) {
+  clearAllTimers();
+
+  if (embedController && state.embedIsPlaying) {
+    try { embedController.togglePlay(); } catch (e) {}
+  }
+
+  state.difficulty = saved.difficulty;
+  state.score = saved.score;
+  state.roundSongs = saved.roundSongs;
+  state.playedSongIds = saved.playedSongIds;
+  state.roundResults = saved.roundResults || [];
+  state.answered = false;
+  state.isPlaying = false;
+  state.hasPlayedSnippet = false;
+
+  // If the saved round was already answered, advance past it
+  state.round = Math.max(saved.round, state.roundResults.length);
+
+  if (state.round >= TOTAL_ROUNDS) {
+    showEndScreen();
+    return;
+  }
+
+  // Sync difficulty picker UI
+  $$('.diff-btn').forEach((b) => {
+    b.classList.toggle('selected', b.dataset.mode === state.difficulty);
+  });
+
+  showScreen('game');
+  showRound();
 }
 
 // ── Start Game ───────────────────────────
 
 function startGame() {
-  clearInterval(tickInterval);
-  clearTimeout(nextRoundTimeout);
-  clearTimeout(playTimeoutId);
-  clearTimeout(playRetryId);
+  pendingRestore = null;
+  clearAllTimers();
 
-  if (embedController && embedIsPlaying) {
+  if (embedController && state.embedIsPlaying) {
     try { embedController.togglePlay(); } catch (e) {}
   }
 
@@ -207,6 +403,7 @@ function startGame() {
   state.answered = false;
   state.isPlaying = false;
   state.hasPlayedSnippet = false;
+  state.roundResults = [];
 
   state.roundSongs = pickRandomSongs(TOTAL_ROUNDS);
 
@@ -215,14 +412,14 @@ function startGame() {
 }
 
 function pickRandomSongs(count) {
-  let available = SONGS.filter((s) => !playedSongIds.has(s.id));
+  let available = SONGS.filter((s) => !state.playedSongIds.has(s.id));
   if (available.length < count) {
-    playedSongIds.clear();
+    state.playedSongIds.clear();
     available = [...SONGS];
   }
   const shuffled = available.sort(() => Math.random() - 0.5);
   const picked = shuffled.slice(0, count);
-  picked.forEach((s) => playedSongIds.add(s.id));
+  picked.forEach((s) => state.playedSongIds.add(s.id));
   return picked;
 }
 
@@ -233,10 +430,12 @@ function showRound() {
   state.answered = false;
   state.isPlaying = false;
   state.hasPlayedSnippet = false;
-  playbackDetected = false;
+  state.playbackDetected = false;
 
   $('#round-num').textContent = state.round + 1;
   $('#score-display').textContent = state.score;
+  updateProgress();
+  saveGame();
 
   // Toggle answer UI based on mode
   if (isEasyMode()) {
@@ -270,7 +469,7 @@ function showRound() {
   } else {
     playerArea.classList.remove('fallback-mode');
     if (embedController && spotifyReady) {
-      trackLoadedAt = Date.now();
+      state.trackLoadedAt = Date.now();
       embedController.loadUri('spotify:track:' + song.id);
     }
   }
@@ -285,8 +484,20 @@ function showRound() {
 
   // Focus input in text modes
   if (!isEasyMode()) {
-    setTimeout(() => $('#guess-input').focus(), 100);
+    setTimeout(() => $('#guess-input').focus(), INPUT_FOCUS_DELAY_MS);
   }
+}
+
+function updateProgress() {
+  const dots = $$('.round-dot');
+  dots.forEach((dot, i) => {
+    dot.className = 'round-dot';
+    if (state.roundResults[i]) {
+      dot.classList.add(state.roundResults[i]);
+    } else if (i === state.round) {
+      dot.classList.add('current');
+    }
+  });
 }
 
 // ── Options (Easy Mode) ─────────────────
@@ -357,7 +568,7 @@ function handleAnswer(index) {
     $('#score-display').textContent = state.score;
     const scoreEl = $('#score-display');
     scoreEl.classList.add('bump');
-    setTimeout(() => scoreEl.classList.remove('bump'), 400);
+    setTimeout(() => scoreEl.classList.remove('bump'), SCORE_BUMP_MS);
   }
 
   const buttons = $$('.option-btn');
@@ -373,6 +584,10 @@ function handleAnswer(index) {
   });
 
   $('#play-btn').disabled = true;
+
+  state.roundResults[state.round] = isCorrect ? 'correct' : 'wrong';
+  updateProgress();
+  saveGame();
 
   showResultFlash(isCorrect);
   showAnswerReveal(song);
@@ -408,10 +623,14 @@ function submitGuess() {
     $('#score-display').textContent = state.score;
     const scoreEl = $('#score-display');
     scoreEl.classList.add('bump');
-    setTimeout(() => scoreEl.classList.remove('bump'), 400);
+    setTimeout(() => scoreEl.classList.remove('bump'), SCORE_BUMP_MS);
   }
 
   $('#play-btn').disabled = true;
+
+  state.roundResults[state.round] = isCorrect ? 'correct' : 'wrong';
+  updateProgress();
+  saveGame();
 
   showResultFlash(isCorrect);
   showAnswerReveal(song);
@@ -421,21 +640,21 @@ function submitGuess() {
 // ── Advance Round ────────────────────────
 
 function advanceRound() {
-  answeredAt = Date.now();
+  state.answeredAt = Date.now();
   const nrBar = $('.next-round-bar');
   nrBar.classList.add('visible');
   requestAnimationFrame(() => {
     nrBar.querySelector('.next-round-fill').style.width = '0%';
   });
 
-  nextRoundTimeout = setTimeout(() => {
+  timers.nextRound = setTimeout(() => {
     state.round++;
     if (state.round >= TOTAL_ROUNDS) {
       showEndScreen();
     } else {
       showRound();
     }
-  }, NEXT_ROUND_DELAY);
+  }, NEXT_ROUND_DELAY_MS);
 }
 
 // ── Player Controls ──────────────────────
@@ -466,7 +685,7 @@ function playSnippet() {
   }
 
   state.isPlaying = true;
-  playbackDetected = false;
+  state.playbackDetected = false;
 
   const playBtn = $('#play-btn');
   playBtn.classList.add('playing');
@@ -485,38 +704,39 @@ function playSnippet() {
     try {
       embedController.seek(safeTime);
       embedController.play();
-    } catch (e) {}
+    } catch (e) {
+      showToast('Playback error — trying again...');
+    }
   }
 
   // On replay, reload the URI first
   if (state.hasPlayedSnippet) {
-    trackLoadedAt = Date.now();
+    state.trackLoadedAt = Date.now();
     embedController.loadUri('spotify:track:' + song.id);
   }
   state.hasPlayedSnippet = true;
 
-  // Wait at least 1s after loadUri before first play attempt
-  const timeSinceLoad = Date.now() - trackLoadedAt;
-  const initialDelay = Math.max(300, 1000 - timeSinceLoad);
+  // Wait at least TARGET_LOAD_DELAY_MS after loadUri before first play attempt
+  const timeSinceLoad = Date.now() - state.trackLoadedAt;
+  const initialDelay = Math.max(MIN_PLAY_DELAY_MS, TARGET_LOAD_DELAY_MS - timeSinceLoad);
 
   setTimeout(attemptPlay, initialDelay);
 
-  // Retry if playback hasn't started after 2s
-  clearTimeout(playRetryId);
-  playRetryId = setTimeout(() => {
-    if (!playbackDetected && state.isPlaying) {
+  // Retry if playback hasn't started
+  clearTimeout(timers.playRetry);
+  timers.playRetry = setTimeout(() => {
+    if (!state.playbackDetected && state.isPlaying) {
       attemptPlay();
     }
-  }, initialDelay + 2000);
+  }, initialDelay + PLAY_RETRY_DELAY_MS);
 
   // Start the snippet timer only once playback is actually detected
-  // (or after a max wait so the UI isn't stuck forever)
   startTimerOnPlayback();
 
   // Ultimate fallback if Spotify never responds
-  clearTimeout(playTimeoutId);
-  playTimeoutId = setTimeout(() => {
-    if (!playbackDetected && state.isPlaying) {
+  clearTimeout(timers.playTimeout);
+  timers.playTimeout = setTimeout(() => {
+    if (!state.playbackDetected && state.isPlaying) {
       stopSnippet();
       activateFallbackMode();
     }
@@ -527,21 +747,21 @@ function startTimerOnPlayback() {
   const duration = snippetDuration() * 1000;
   let timerStarted = false;
 
-  clearInterval(tickInterval);
-  tickInterval = setInterval(() => {
-    if (!state.isPlaying) { clearInterval(tickInterval); return; }
+  clearInterval(timers.tick);
+  timers.tick = setInterval(() => {
+    if (!state.isPlaying) { clearInterval(timers.tick); return; }
 
     // Wait for actual playback before counting down
     if (!timerStarted) {
-      if (playbackDetected) {
+      if (state.playbackDetected) {
         timerStarted = true;
         $('#player-label').textContent = 'NOW PLAYING';
-        state._timerStart = Date.now();
+        state.timerStart = Date.now();
       }
       return;
     }
 
-    const elapsed = Date.now() - state._timerStart;
+    const elapsed = Date.now() - state.timerStart;
     const remaining = Math.max(0, duration - elapsed);
     const pct = (remaining / duration) * 100;
 
@@ -549,38 +769,37 @@ function startTimerOnPlayback() {
     $('#timer-text').textContent = (remaining / 1000).toFixed(1) + 's';
 
     if (remaining <= 0) stopSnippet();
-  }, 50);
+  }, TIMER_TICK_MS);
 }
 
 function activateFallbackMode() {
   state.fallbackMode = true;
   state.isPlaying = false;
-  clearInterval(tickInterval);
+  clearInterval(timers.tick);
 
   const song = state.roundSongs[state.round];
   $('.player-area').classList.add('fallback-mode');
   createFallbackEmbed(song.id);
-  showToast('Click play on the Spotify player to listen!');
+  showToast('Spotify couldn\'t connect — use the player below');
 }
 
 function stopSnippet() {
   if (!state.isPlaying) return;
 
   state.isPlaying = false;
-  clearInterval(tickInterval);
-  clearTimeout(playTimeoutId);
-  clearTimeout(playRetryId);
+  clearInterval(timers.tick);
+  clearTimeout(timers.playTimeout);
+  clearTimeout(timers.playRetry);
 
   if (embedController) {
-    if (embedIsPlaying) {
+    if (state.embedIsPlaying) {
       try { embedController.togglePlay(); } catch (e) {}
     }
-    // Retry only if Spotify reports it's still playing
     setTimeout(() => {
-      if (embedIsPlaying) {
+      if (state.embedIsPlaying) {
         try { embedController.togglePlay(); } catch (e) {}
       }
-    }, 300);
+    }, STOP_RETRY_DELAY_MS);
   }
 
   const playBtn = $('#play-btn');
@@ -683,6 +902,7 @@ function showResultFlash(isCorrect) {
 // ── End Screen ───────────────────────────
 
 function showEndScreen() {
+  clearSavedGame();
   showScreen('end');
 
   const score = state.score;
@@ -713,7 +933,7 @@ function spawnConfetti() {
   document.body.appendChild(container);
 
   const colors = ['#FF006E', '#FF4D94', '#FFB6C1', '#FFF', '#FF69B4'];
-  for (let i = 0; i < 60; i++) {
+  for (let i = 0; i < CONFETTI_PIECE_COUNT; i++) {
     const piece = document.createElement('div');
     piece.className = 'confetti-piece';
     piece.style.left = Math.random() * 100 + '%';
@@ -725,7 +945,7 @@ function spawnConfetti() {
     piece.style.borderRadius = Math.random() > 0.5 ? '50%' : '2px';
     container.appendChild(piece);
   }
-  setTimeout(() => container.remove(), 5000);
+  setTimeout(() => container.remove(), CONFETTI_DURATION_MS);
 }
 
 // ── Utilities ────────────────────────────
@@ -748,7 +968,7 @@ function showToast(message) {
   toast.classList.remove('show');
   void toast.offsetWidth;
   toast.classList.add('show');
-  setTimeout(() => toast.classList.remove('show'), 3000);
+  setTimeout(() => toast.classList.remove('show'), TOAST_DURATION_MS);
 }
 
 function playSvg() {
